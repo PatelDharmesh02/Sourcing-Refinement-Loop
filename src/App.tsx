@@ -158,6 +158,21 @@ function App() {
     }
   }
 
+  function restart() {
+    setView("land");
+    setQuery("");
+    setDraft("");
+    setLandError("");
+    setBusy(null);
+    setFrozen(false);
+    setFilters(emptyFilters());
+    setRubric("");
+    setSaved("");
+    setItems([]);
+    setVotes({});
+    seq.current = 1;
+  }
+
   if (view === "land") {
     return (
       <Landing
@@ -185,14 +200,21 @@ function App() {
           <p className="mark">Sourcing</p>
           <p className="mark-sub">{frozen ? "Search frozen" : "One search, refined in conversation"}</p>
         </div>
-        <button type="button" className="freeze" disabled={locked} onClick={() => setFrozen(true)}>
-          {frozen ? "Frozen" : "Freeze search"}
-        </button>
+        <div className="topbar-actions">
+          {frozen && (
+            <button type="button" className="restart" onClick={restart}>
+              Restart
+            </button>
+          )}
+          <button type="button" className="freeze" disabled={locked} onClick={() => setFrozen(true)}>
+            {frozen ? "Frozen" : "Freeze search"}
+          </button>
+        </div>
       </header>
       {frozen && (
         <div className="frozen-banner">
           <strong>This search is frozen.</strong>
-          <span>The filters, the rubric, and the shortlist below are the final result. Refresh the page to start over.</span>
+          <span>The filters, the rubric, and the shortlist below are the final result. Click Restart to begin a new search.</span>
         </div>
       )}
       </div>
