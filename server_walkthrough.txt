@@ -1,0 +1,359 @@
+SERVER.PY WALKTHROUGH
+=====================
+
+This file explains every constant, schema, alias map, and function in server.py.
+Read it top to bottom. That is also the order the code runs for a normal search.
+
+
+1. TOP-LEVEL CONSTANTS
+----------------------
+
+ROOT
+  Absolute path of the project folder. Used to find profiles.json and .env.
+
+PROFILES
+  The 48 candidate records loaded once at startup from profiles.json.
+  This is the entire talent pool for the demo.
+
+SCORE_CAP = 15
+  After hard filters, at most 15 people are sent to Gemini for scoring.
+  Keeps cost and latency bounded. At 98M profiles this is the shortlist
+  the model would still see.
+
+TOP_N = 5
+  How many people the UI shows after scoring.
+
+MODEL = "gemini-3.1-flash-lite"
+  The Gemini model id used for every LLM call.
+
+
+2. FILTER_SCHEMA (JSON Schema for Gemini)
+-----------------------------------------
+
+FILTER_SCHEMA tells Gemini what a filters object must look like when it
+returns JSON. It is passed into response_format on interpret and refine.
+
+Fields:
+  skills_all      every skill in this list is required
+  skills_any      at least one skill in this list is required
+  min_years       inclusive lower bound, or null
+  max_years       inclusive upper bound, or null
+  locations       list of place names
+  company_types   startup | scaleup | enterprise | agency
+  company_scope   current (only current employer) or any (current or past)
+  title_keywords  role-family words such as backend, frontend, devops
+
+Why it exists:
+  Without a schema, Gemini may return missing keys, wrong types, or free
+  text. With FILTER_SCHEMA, the reply is shaped like our Filters model,
+  then Pydantic checks it again.
+
+
+3. LOCATIONS, LOCATION_ALIASES, COMPANY_TYPES, SKILL_ALIASES
+-----------------------------------------------------------
+These are the dictionaries/sets around lines 49-112.
+
+WHY THEY EXIST
+  The model and the recruiter use many spellings for the same thing:
+  "Bengaluru", "Bangalore", "BLR", "RDS", "AWS RDS", "postgres",
+  "PostgreSQL". profiles.json uses one exact spelling per field.
+
+  Hard filters are equality / membership checks in Python. If the filter
+  says "Bengaluru" and the profile says "Bangalore", nobody matches.
+  Aliases map casual names onto the exact values stored in the file.
+
+LOCATIONS
+  The closed set of location strings that exist in profiles.json:
+  Bangalore, Chennai, Mumbai, Hyderabad, Delhi NCR, Pune, Amsterdam,
+  Berlin, Remote - India.
+
+  Used as documentation of what is valid. normalize() only keeps values
+  that LOCATION_ALIASES can map onto these exact strings.
+
+LOCATION_ALIASES
+  Maps lowercase casual names to the exact location string in the file.
+
+  Examples:
+    "bengaluru" / "blr"     -> "Bangalore"
+    "bombay"                -> "Mumbai"
+    "delhi" / "ncr" /
+    "gurgaon" / "noida"     -> "Delhi NCR"
+    "remote" / "remote india" -> "Remote - India"
+
+  Used in normalize(). Any location the model returns that is not in this
+  map is dropped, so garbage place names cannot empty or pollute the pool.
+
+COMPANY_TYPES
+  Allowed company_type values from the dataset:
+  startup, scaleup, enterprise, agency.
+
+  Used in normalize() to drop anything else. Prevents inventing types like
+  "FAANG" or "unicorn" that no profile has.
+
+SKILL_ALIASES
+  Maps skill nicknames to a normalized form used only for comparison.
+
+  Examples:
+    "rds" / "amazon rds" -> "aws rds"
+    "postgres"           -> "postgresql"
+    "node" / "nodejs"    -> "node.js"
+    "reactjs"            -> "react"
+    "k8s"                -> "kubernetes"
+    "ts"                 -> "typescript"
+    "py"                 -> "python"
+    "mongo"              -> "mongodb"
+
+  Used by norm_skill() and skill_hit().
+  Matching is case-insensitive and punctuation-insensitive.
+  So a filter of "RDS" matches a profile skill of "AWS RDS".
+
+  Without this, "RDS developers" often becomes skills_all: ["RDS"] and
+  fails against every profile whose skill is literally "AWS RDS".
+
+
+4. PYDANTIC MODELS (REQUEST / RESPONSE SHAPES)
+---------------------------------------------
+
+LlmError
+  Internal exception. code is one of:
+  config, rate_limit, timeout, malformed, upstream.
+  The API turns these into HTTP status codes for the UI.
+
+Filters
+  Same fields as FILTER_SCHEMA. What the UI edits and what retrieve() uses.
+  extra="ignore" means unknown keys from Gemini are dropped, not crashed on.
+
+QueryIn
+  Body for POST /api/interpret: { "query": "..." }
+
+SearchIn
+  Body for POST /api/search: { "filters": {...}, "rubric": "..." }
+
+ShownProfile
+  One numbered card sent back on refine, including optional verdict yes/no.
+
+RefineIn
+  Body for POST /api/refine:
+  current filters, rubric, free-text feedback, and the shortlist on screen.
+
+InterpretOut
+  What Gemini must return for interpret: filters + rubric string.
+
+ScoreItem
+  One scored person: id, score 0-100, explanation text.
+  score is clamped. explanation is stripped.
+
+ScoreOut
+  { "scores": [ ScoreItem, ... ] }
+
+RefineOut
+  Updated filters, updated rubric paragraph, and change_summary
+  (plain English of what changed and why).
+
+
+5. HELPER FUNCTIONS
+-------------------
+
+load_local_env()
+  Reads .env into the process if the key is not already exported.
+  Called once at import time so GEMINI_API_KEY works without export.
+
+fail(status, code, message)
+  Builds a JSON error body: { "error": { "code", "message" } }.
+
+llm_fail(error)
+  Maps LlmError codes to HTTP status:
+  rate_limit 429, timeout 504, malformed 502, config 500, upstream 502.
+
+dedupe(values)
+  Removes empty strings and case-insensitive duplicates while keeping order.
+
+norm_skill(value)
+  Lowercases, strips punctuation, collapses spaces, then applies SKILL_ALIASES.
+  Example: "Node JS" -> "node.js"
+
+skill_hit(needed, skills)
+  True if any skill in the profile matches the needed skill after norm_skill.
+  This is how "RDS" matches "AWS RDS".
+
+usable_titles(words)
+  Keeps only title keywords that actually appear in some profile title.
+  If Gemini puts "developer" or "RDS" into title_keywords, those words would
+  match nobody and empty the pool. This drops them.
+
+normalize(filters)
+  Cleans model/UI filters before retrieve():
+  - maps locations through LOCATION_ALIASES
+  - keeps only valid company_types
+  - swaps min/max if they are reversed
+  - caps skill lists and title keywords
+  - runs usable_titles on title_keywords
+  Always call this before filtering.
+
+company_types_of(profile, scope)
+  Returns company types for a person.
+  scope "current" -> only current_company_type
+  scope "any"     -> current plus past_companies types
+  Supports "worked at startups" vs "currently at a startup".
+
+passes(profile, filters, check)
+  One hard-filter check for one person.
+  check is skills | years | location | company | title.
+  Empty filter fields mean "no constraint".
+
+retrieve(filters)
+  Applies all hard filters in order to PROFILES.
+  Returns (matched_profiles, trace).
+  trace is counts after each step, used for the empty-results message
+  ("Skills removed the last N").
+  This is the stand-in for an OpenSearch/Elasticsearch query at scale.
+
+cheap_score(profile, filters)
+  Fast local score with no LLM: years closeness + skill overlap.
+  Used only to choose which 15 people Gemini will see.
+
+pre_rank(matches, filters)
+  Sorts by cheap_score and keeps SCORE_CAP (15).
+
+matched_skills(profile, filters)
+  Skills on the profile that overlap the requested skills.
+  Used for UI highlighting and local explanations.
+
+local_explanation(profile, filters)
+  Fallback sentence built from real title, company, years, location, skills.
+  Used when Gemini scoring fails or an explanation does not cite the profile.
+
+cites(profile, text)
+  True if the explanation mentions a real company, title, location, skill,
+  or past company from that profile. Stops generic praise.
+
+to_card(profile, filters, score, explanation)
+  Shape the UI expects for one result card.
+
+compact(profile)
+  Smaller profile sent to Gemini for scoring (drops the repeated summary
+  field, keeps skills, companies, title, years, location, education).
+
+parse_json(text)
+  Parses model output. Strips ```json fences if present.
+  Must return a JSON object.
+
+gemini_client()
+  Builds the GenAI client from GEMINI_API_KEY.
+  Raises LlmError("config") if the key is missing.
+
+response_schema(model)
+  Picks the JSON schema for InterpretOut, ScoreOut, or RefineOut
+  and passes it to Gemini response_format.
+
+raise_llm(error)
+  Turns Gemini/API exceptions into LlmError:
+  429 -> rate_limit, timeout-like -> timeout, else upstream.
+
+complete(messages, model)
+  One Gemini Interactions call with JSON schema.
+  Validates with Pydantic.
+  Retries once if the JSON is invalid.
+  This is the only place that talks to the LLM.
+
+
+6. SEARCH PIPELINE FUNCTIONS
+----------------------------
+
+score_shortlist(shortlist, filters, rubric)
+  One Gemini call to score everyone in the shortlist against the rubric.
+  Keeps Gemini explanations that cite the profile.
+  Replaces weak ones with local_explanation.
+  Returns the top TOP_N cards.
+
+run_search(filters, rubric)
+  Full search:
+  1. normalize filters
+  2. require a non-empty rubric
+  3. retrieve() hard filter
+  4. if empty, return empty with trace (no LLM)
+  5. pre_rank() to at most 15
+  6. score_shortlist(), or fall back to unscored cards on LLM failure
+
+  Returns filters, rubric, profiles, pool_size, scored_count, trace,
+  scored (true/false), and optional warning.
+
+
+7. API ROUTES
+-------------
+
+POST /api/interpret
+  Input: free-text query
+  Calls Gemini with prompts.INTERPRET
+  Returns cleaned filters + rubric paragraph
+  On LLM failure: typed error JSON
+
+POST /api/search
+  Input: filters + rubric
+  Runs run_search
+  Used for the first search and for "Run search" after editing the panel
+
+POST /api/refine
+  Input: filters, rubric, feedback text, shown shortlist with optional yes/no
+  Calls Gemini with prompts.REFINE
+  Gets updated filters, rubric, and change_summary
+  Then runs run_search again
+  Returns the new results plus change_summary
+
+
+8. HOW THE PIECES CONNECT (ONE EXAMPLE)
+---------------------------------------
+
+Recruiter types:
+  "RDS developers with 4-7 years who have worked at startups, based in Bangalore"
+
+1. interpret()
+   Gemini returns something like:
+     skills_all: ["AWS RDS"] or ["RDS"]
+     min_years: 4, max_years: 7
+     locations: ["Bangalore"] or ["Bengaluru"]
+     company_types: ["startup"]
+     company_scope: "any"
+     rubric: a short paragraph about fit
+
+2. normalize()
+   LOCATION_ALIASES: Bengaluru -> Bangalore
+   SKILL_ALIASES (later in skill_hit): RDS -> aws rds
+   COMPANY_TYPES: keeps only "startup"
+
+3. retrieve()
+   Keeps people with AWS RDS, 4-7 years, Bangalore, and startup
+   experience (current or past). Builds the filter trace.
+
+4. pre_rank()
+   Keeps at most 15 by cheap_score.
+
+5. score_shortlist()
+   Gemini scores them against the rubric paragraph.
+   UI shows the top 5 with cited explanations.
+
+6. refine()
+   Recruiter says "1 is too junior".
+   Gemini raises min_years, returns change_summary,
+   and run_search runs again.
+
+
+9. WHAT NOT TO REMOVE WITHOUT THINKING
+--------------------------------------
+
+LOCATION_ALIASES / SKILL_ALIASES
+  Without them, common recruiter wording returns zero matches.
+
+usable_titles()
+  Without it, bad title keywords can wipe the whole pool.
+
+SCORE_CAP / pre_rank()
+  Without them, scoring cost grows with every match, and at 98M that
+  becomes impossible.
+
+cites() + local_explanation()
+  Without them, the UI can show generic praise or go blank when Gemini
+  is weak or unavailable.
+
+normalize()
+  Without it, untrusted model output goes straight into retrieve().

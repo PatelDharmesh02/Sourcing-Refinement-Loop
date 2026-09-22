@@ -1,0 +1,270 @@
+APP.TSX WALKTHROUGH
+===================
+
+This file explains every type, constant, function, and screen component in src/App.tsx.
+The UI has two screens: a landing search, then a workspace with a chat thread on the left
+and the filters plus rubric on the right.
+
+Related files, only so the names below make sense:
+  src/main.tsx   mounts <App />
+  src/api.ts     interpret(), search(), refine() — the three POST calls
+  src/types.ts   Filters, Profile, SearchResult, LOCATIONS, COMPANY_TYPES
+
+
+1. TYPES AT THE TOP OF APP.TSX
+------------------------------
+
+Busy
+  "interpreting" | "scoring" | "refining" | null
+  What the app is waiting on. null means the recruiter can type and edit.
+  interpreting  first sentence is being turned into filters and a rubric
+  scoring       filters are applied and Gemini is scoring people
+  refining      feedback is updating the filters and the search is running again
+
+Vote
+  "yes" | "no"
+  A per-card reaction. Stored by profile id, not by the number on the card.
+
+Item
+  One message in the thread. kind decides how it is drawn:
+    user     something the recruiter said
+    change   "What changed" note from a refinement
+    results  a shortlist of profile cards
+    empty    nobody passed the filters
+    error    a failed call; the filters on the right stay as they were
+
+  Each item has an id so React can keep the list stable as new messages are added.
+
+
+2. CONSTANTS
+------------
+
+EXAMPLES
+  Three ready-made searches under the landing box.
+  Clicking one fills the box and starts the search immediately.
+
+STATUS
+  The sentence shown next to the thinking dots for each Busy value.
+    interpreting  "Turning that into filters and a rubric"
+    scoring       "Filtering the pool and scoring the closest matches"
+    refining      "Updating the search from your feedback"
+
+
+3. SMALL HELPERS
+----------------
+
+snapshot(filters, rubric)
+  Turns the current filters and rubric into one string.
+  Compared with the last search that actually ran.
+  If they differ, the panel is "dirty" and shows Run search.
+  Editing a chip does not call the API until the recruiter presses that button.
+
+emptyCopy(trace)
+  Builds the empty-results sentence from the server's filter trace.
+  Finds the first step that dropped the count to zero.
+  Example: "Skills removed the last 48. Loosen that filter and run the search again."
+  If the pool was already empty at the start, it uses a generic line.
+
+resultHeading(result)
+  "5 matches" when everyone who passed is on screen.
+  "5 of 18 matches" when the pool was larger and only the top 5 are shown.
+
+messageOf(error)
+  If the API threw ApiError, show that message.
+  Otherwise: "Something went wrong. Try again."
+
+nextId()
+  A counter in a ref. Gives each thread item a unique id.
+  A ref is used so the counter survives re-renders without causing one.
+
+push(item)
+  Appends one item to the thread. Uses the previous list, so two pushes
+  in a row do not overwrite each other.
+
+applyResult(result, note?)
+  After a successful search or refine:
+    copies filters and rubric from the server (so the panel matches what ran)
+    saves a new snapshot (panel is no longer dirty)
+    clears Yes/No votes
+    optionally adds a "What changed" note
+    adds a results block, or an empty block if nobody matched
+
+
+4. APP STATE
+------------
+
+view        "land" (first screen) or "work" (thread + panel)
+query       text in the landing search box
+draft       text in the bottom feedback box
+landError   error shown on the landing screen if the first call fails
+busy        see Busy above
+frozen      true after Freeze search. Panel and composer lock.
+filters     the filter object the panel edits
+rubric      the one paragraph in the rubric box
+saved       snapshot of the last filters + rubric that were searched
+items       the thread
+votes       map of profile id -> "yes" | "no" for the latest shortlist
+seq         id counter
+endRef      empty div at the bottom of the thread; the effect scrolls to it
+
+Derived:
+  locked    frozen OR a request is in flight. Disables edits, Send, and Freeze.
+  dirty     panel differs from the last successful search. Shows "Run search".
+
+The scroll effect runs whenever items or busy changes, so new cards and
+the thinking line stay in view.
+
+
+5. THE THREE ACTIONS
+--------------------
+
+runQuery(text)
+  First search, from the landing box or an example chip.
+  1. Ignore empty text or a click while already busy.
+  2. Set busy to interpreting. Landing button reads "Reading".
+  3. POST /api/interpret with the sentence.
+     On failure: stay on the landing screen and show landError. Text stays in the box.
+  4. On success: store filters and rubric, switch to the workspace,
+     put the sentence in the thread, set busy to scoring.
+  5. POST /api/search with those filters and that rubric.
+     On success: applyResult (cards or empty state).
+     On failure: an error line in the thread. Filters stay on the right.
+  6. Clear busy in finally, so the UI never stays stuck on "thinking".
+
+runEdited()
+  Recruiter changed the panel and pressed Run search.
+  Does not call interpret. Sends the edited filters and rubric to /api/search.
+  Adds a user line: "Updated the filters and ran the search."
+  Only runs when the panel is dirty and not locked.
+
+sendFeedback(text)
+  Chat box or Yes/No, then Send.
+  Finds the latest results or empty block.
+  Builds feedback from the typed sentence plus reactions like "1 yes, 3 no".
+  Does nothing if there is no text and no votes.
+  POST /api/refine with filters, rubric, feedback, and the numbered profiles
+  (index starts at 1, matching the number on the card, plus verdict).
+  On success: applyResult with the change_summary as the "What changed" note.
+  On failure: error line. Previous filters stay, because setFilters only
+  happens inside applyResult after a successful response.
+
+restart()
+  Shown only after freeze. Puts every piece of state back to the first load:
+  landing view, empty filters, empty rubric, empty thread, not frozen.
+  This is a new session in the browser. The server stores nothing.
+
+
+6. WHAT APP RENDERS
+-------------------
+
+If view is "land"
+  Renders <Landing>. The workspace does not exist yet.
+
+If view is "work"
+  Header: title, Freeze, and Restart (Restart only when frozen).
+  Frozen banner when frozen.
+  Left: thread of items, thinking line while busy, composer at the bottom.
+  Right: <Panel>.
+
+latestId
+  The id of the newest results block.
+  Only that block gets Yes/No buttons, and only when the search is not frozen.
+  Older shortlists stay on screen as history, without buttons.
+  If the newest outcome is empty, no card has buttons.
+
+
+7. SCREEN COMPONENTS
+--------------------
+
+Landing
+  Centered question, one input, Search button, example chips, error banner.
+  Search is disabled until there is text, or while the first call is running.
+  Example buttons call onExample, which sets the query and runs it.
+
+Panel
+  Always-visible filters and rubric.
+  Title is "This search", or "Frozen search" after freeze.
+  Run search appears only when dirty and not frozen.
+  patch() copies the filter object and changes one field, so one edit
+  does not wipe the others.
+  Locked (busy or frozen) disables every control.
+
+  Fields:
+    Must have every skill   filters.skills_all     ChipField
+    Must have one of        filters.skills_any     ChipField
+    Min / max years         number inputs, empty means no bound
+    Location                toggles from LOCATIONS in types.ts
+    Company type            toggles: startup, scaleup, enterprise, agency
+    Company match           "any" = current or past, "current" = current only
+    Role family             title_keywords         ChipField
+    Rubric                  one textarea
+
+ChipField
+  Shows each value as a chip. Clicking a chip removes it.
+  Typing and pressing Enter adds a chip.
+  Duplicate check is case-insensitive.
+  Enter is prevented from submitting a parent form.
+
+YearField
+  Empty input stores null (no year constraint).
+  A number stores that number. Range on the input is 0 to 40.
+
+ToggleField
+  Multi-select buttons. Pressed means that value is in the list.
+  Pressing again removes it. aria-pressed tells assistive tech the state.
+
+ThreadItem
+  Draws one Item:
+    user    dark bubble on the right
+    change  "What changed" plus the model's sentence
+    error   red banner, plus "Your filters are still on the right."
+    empty   "No matches" plus emptyCopy(trace)
+    results heading ("5 of 18 matches"), a line about scoring,
+            a warning banner if the model did not score,
+            then one ProfileCard per person
+
+  The scored line:
+    scored true   "Scored the closest N."
+    scored false  "Showing a simple rank. The model did not score this set."
+
+ProfileCard
+  Number (1–5), name, title, company, company type, location, years.
+  Score, or an em dash if the model did not score.
+  Explanation paragraph.
+  Skill chips. Skills in matched_skills are highlighted.
+  Yes and No only when active (latest shortlist, not frozen).
+  Pressing the same vote again clears it.
+
+
+8. HOW A CLICK MOVES THROUGH THE FILE
+-------------------------------------
+
+First search
+  Landing form -> onSubmit -> runQuery
+  -> interpret() -> set view to work -> search() -> applyResult
+  -> ThreadItem draws cards, Panel shows filters and rubric
+
+Edit then search
+  ChipField / YearField / ToggleField / rubric textarea -> setFilters or setRubric
+  -> snapshot differs from saved -> dirty -> Run search -> runEdited -> search()
+
+Feedback
+  Yes/No -> setVotes
+  Composer submit -> sendFeedback -> refine() -> applyResult
+  New "What changed" note, then a new set of cards
+  Votes clear so the next round starts unmarked
+
+Freeze
+  setFrozen(true) -> locked -> panel and composer disabled
+  Banner explains this is the final filters, rubric, and shortlist
+  Restart -> restart() -> back to Landing
+
+
+9. WHAT THE UI DELIBERATELY DOES NOT DO
+---------------------------------------
+
+It does not keep a search after refresh. All state is React useState.
+It does not call the model when you edit a chip. Run search does that,
+and it skips interpret so your edit is not rewritten.
+It does not put Yes/No on old shortlists. Only the latest set can be voted on.
+It does not clear the right-hand panel when a call fails.
