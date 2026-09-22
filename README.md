@@ -45,23 +45,41 @@ pip install -r requirements.txt
 npm install
 ```
 
-Put the key in a `.env` file in this folder (it is gitignored):
+Put the keys in a `.env` file in this folder (it is gitignored):
 
 ```bash
 cp .env.example .env
 ```
 
-`.env` contains one line:
+`.env` looks like this:
 
 ```bash
 GEMINI_API_KEY=your_key
+VITE_API_BASE_URL=https://sourcing-refinement-loop-utg8.vercel.app
 ```
 
-You can `export GEMINI_API_KEY=your_key` instead. If both are set, the exported value wins. Restart the API after changing the key.
+You can `export GEMINI_API_KEY=your_key` instead. If both are set, the exported value wins. Restart the API after changing the key. Restart the UI after changing `VITE_API_BASE_URL`.
 
-## Run
+### API base URL
 
-Two terminals, from this folder.
+| Mode | `VITE_API_BASE_URL` | What happens |
+| --- | --- | --- |
+| Deployed (default) | `https://sourcing-refinement-loop-utg8.vercel.app` | UI calls the Vercel backend |
+| Local fallback | unset, empty, or removed | UI uses relative `/api` paths; Vite proxies them to `http://127.0.0.1:8000` |
+
+## Run against the deployed API
+
+Only the UI is needed. Keep `VITE_API_BASE_URL` set to the Vercel URL above.
+
+```bash
+npm run dev
+```
+
+Open http://localhost:5173.
+
+## Run against a local API
+
+Clear or remove `VITE_API_BASE_URL` in `.env` (or leave it blank), then use two terminals from this folder.
 
 Terminal 1, API:
 

@@ -1,5 +1,8 @@
 import type { Filters, SearchResult } from "./types";
 
+// Deployed URL from VITE_API_BASE_URL; empty falls back to Vite's /api → local :8000 proxy.
+const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "") ?? "";
+
 export class ApiError extends Error {
   code: string;
 
@@ -10,7 +13,7 @@ export class ApiError extends Error {
 }
 
 async function post<T>(path: string, body: unknown): Promise<T> {
-  const response = await fetch(path, {
+  const response = await fetch(`${API_BASE}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
