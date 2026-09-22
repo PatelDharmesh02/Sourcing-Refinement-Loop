@@ -1,7 +1,7 @@
 import type { Filters, SearchResult } from "./types";
 
 // Deployed URL from VITE_API_BASE_URL; empty falls back to Vite's /api → local :8000 proxy.
-const API_BASE = (import.meta.env.VITE_API_BASE_URL as string | undefined)?.replace(/\/$/, "") ?? "";
+const API_BASE = import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") ?? "";
 
 export class ApiError extends Error {
   code: string;
