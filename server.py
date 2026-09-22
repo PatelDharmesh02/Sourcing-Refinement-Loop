@@ -553,10 +553,24 @@ def run_search(filters: Filters, rubric: str) -> dict:
     return body
 
 
+DEFAULT_CORS_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "https://sourcing-refinement-loop-chi.vercel.app",
+]
+
+
+def cors_origins() -> list[str]:
+    raw = os.environ.get("CORS_ORIGINS", "").strip()
+    if not raw:
+        return DEFAULT_CORS_ORIGINS
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+
+
 app = FastAPI(title="Sourcing")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=cors_origins(),
     allow_methods=["POST", "OPTIONS"],
     allow_headers=["*"],
 )
